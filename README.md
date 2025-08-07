@@ -1,4 +1,4 @@
-# Méthodes itératives I
+# Méthodes itératives III
 
 1. Créez un *fork* de ce dépôt sur votre compte GitHub ;
 2. clonez votre *fork* en local ;
