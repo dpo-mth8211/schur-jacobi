@@ -1,0 +1,74 @@
+---
+title: "Rapport de laboratoire 5"
+subtitle: "MTH8211"
+author:
+  - name: Mon nom
+    email: mon.adresse@polymtl.ca
+    affiliation:
+      - name: Polytechnique Montréal
+format:
+  pdf:
+    keep-tex: false
+    documentclass: article
+    include-in-header:
+      - text: |
+            \usepackage{xspace}
+            \usepackage[francais]{babel}
+    geometry:
+      - margin=1in
+    papersize: letter
+    colorlinks: true
+    urlcolor: blue
+engine: julia
+---
+
+```{julia}
+#| output: false
+using Pkg
+Pkg.activate("labo6_env")
+Pkg.add("Krylov")
+Pkg.add("SuiteSparseMatrixCollection")
+Pkg.add("MatrixMarket")
+
+using LinearAlgebra
+using MatrixMarket
+using Krylov, SuiteSparseMatrixCollection
+```
+
+# Contexte
+
+Dans ce laboratoire, on demande d'évaluer la qualité de préconditionneurs basés sur la diagonale d'un complément de Schur pour les systèmes de point de selle.
+On se réfèrera aux carnets Jupyter vus en laboratoire pour les extraits de code pertinents.
+
+# Question 1
+
+Sur base des problèmes de la collection `animal`, résoudre le système des équations normales du laboratoire (avec $c = 0$) à l'aide de MINRES-QLP et le préconditionneur de Jacobi du complément de Schur $\text{diag}(A A^T + N)
+$.
+Vous pouvez choisir $N \neq 0$.
+
+Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
+
+```{julia}
+# votre code ici
+```
+
+# Question 2
+
+Résoudre les systèmes de point de selle de la `stokes-collection` à l'aide de MINRES-QLP et les préconditionneurs de Schur-Jacobi
+$$
+  \begin{bmatrix}
+    M & \\
+      & \text{diag}(A M^{-1} A^T + N)
+  \end{bmatrix}
+  \quad \text{et} \quad
+  \begin{bmatrix}
+    \text{diag}(A^T N^{-1} A + M) & \\
+                                  & N
+  \end{bmatrix}.
+$$
+
+Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
+
+```{julia}
+# votre code ici
+```
