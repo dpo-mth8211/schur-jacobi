@@ -2,8 +2,8 @@
 title: "Rapport de laboratoire 5"
 subtitle: "MTH8211"
 author:
-  - name: Mon nom
-    email: mon.adresse@polymtl.ca
+  - name: Téo Dumoutier
+    email: teo.dumoutier@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
 format:
@@ -14,6 +14,8 @@ format:
       - text: |
             \usepackage{xspace}
             \usepackage[francais]{babel}
+            \usepackage{fvextra}
+            \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
     geometry:
       - margin=1in
     papersize: letter
@@ -29,10 +31,18 @@ Pkg.activate("labo6_env")
 Pkg.add("Krylov")
 Pkg.add("SuiteSparseMatrixCollection")
 Pkg.add("MatrixMarket")
+Pkg.add("PrettyTables")
+Pkg.add("HarwellRutherfordBoeing")
+Pkg.add("MAT")
+Pkg.add("LinearOperators")
 
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
 using MatrixMarket
 using Krylov, SuiteSparseMatrixCollection
+using PrettyTables
+using HarwellRutherfordBoeing
+using MAT
+using LinearOperators
 ```
 
 # Contexte
@@ -49,8 +59,115 @@ Vous pouvez choisir $N \neq 0$.
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+#| output: false
+function jacobi(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    """
+        J⁻¹ = jacobi(A, M, N; variant=false)
+
+    Compute the inverse of the diagonal of `AM⁻¹Aᵀ + N` when `variant = false`.
+    Compute the inverse of the diagonal of `AᵀN⁻¹A + M` when `variant = true`.
+    `J⁻¹`, `M` and `N` are diagonal matrices.
+    """
+    m, n = size(A)
+    if !variant
+        s = zeros(T, m)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                Mj = M[j,j]
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[row] += val^2 / Mj
+                end
+            end
+        else
+            for i in 1:m
+                s[i] = sum(A[i,j]^2 / M[j,j] for j=1:n)
+            end
+        end
+        s .+= N.diag
+    else
+        s = zeros(T, n)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[j] += val^2 / N[row,row]
+                end
+            end
+        else
+            for i in 1:n
+                s[i] = sum(A[j,i]^2 / N[j,j] for j=1:m)
+            end
+        end
+        s .+= M.diag
+    end
+    return Diagonal(1 ./ s)
+end
 ```
+
+```{julia}
+#| output: false
+animal_path = "./animal"
+pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
+
+function animal(pb :: String)
+    HB = HarwellBoeingMatrix("$(animal_path)/hb/$(pb).hb")
+    A = HB.matrix
+    n, m = size(A)
+    b = HB.rhs[:,1]
+    M = Diagonal(ones(n))
+    N_1 = Diagonal(zeros(m))
+    N_2 = 1e-4*Diagonal(ones(m))
+    return A, b, M, N_1, N_2
+end
+```
+
+```{julia}
+data_1 = Array{Any}(undef, 8, 3)
+headers_1 = [
+    "Problème (N = 0)",
+    "Itérations",
+    "Itérations avec P"
+]
+data_2 = Array{Any}(undef, 8, 3)
+headers_2 = [
+    "Problème (N = 1e-4 I)",
+    "Itérations ",
+    "Itérations avec P"
+]
+
+for i in 1:8
+  name = pbs[i]
+  data_1[i, 1] = name
+  data_2[i, 1] = name
+
+  A, b, M, N_1, N_2 = animal(name)
+  n, m = size(A)
+  A = sparse(A')
+
+  A_, b_, P_1 = A*A', A*b, jacobi(A, M, N_1)
+  (sol, stats) = minres_qlp(A_, b_)
+  data_1[i, 2] = stats.niter
+  (sol, stats) = minres_qlp(A_, b_, M=P_1, ldiv=false)
+  data_1[i, 3] = stats.niter
+
+  A_, b_, P_2 = A*A' + N_2, A*b, jacobi(A, M, N_2)
+  (sol, stats) = minres_qlp(A_, b_)
+  data_2[i, 2] = stats.niter
+  (sol, stats) = minres_qlp(A_, b_, M=P_2, ldiv=false)
+  data_2[i, 3] = stats.niter
+end
+pretty_table(data_1; header=headers_1)
+pretty_table(data_2; header=headers_2)
+```
+
+Pour tous les problèmes, que ce soit avec $N = 0$ ou $N \neq 0$, on remarque que le nombre d'itérations est réduit avec préconditionneur (et cette réduction est parfois très forte), ce qui est attendu et montre son efficacité.
 
 # Question 2
 
@@ -70,5 +187,125 @@ $$
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+#| output: false
+function ischur(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    """
+        S⁻¹ = ischur(A, M, N; variant=false)
+
+    Linear operator that models a preconditioner based on the diagonal
+    of the Schur complement and the block LBLᵀ factorization
+
+        [ -M   Aᵀ ] = [  Iₙ       ] [  -M               ] [ Iₙ  -M⁻¹Aᵀ ]
+        [  A   N  ]   [ -AM⁻¹  Iₘ ] [        AM⁻¹Aᵀ + N ] [      Iₘ    ]
+
+    or the variant
+
+        [ -M   Aᵀ ] = [ Iₙ  AᵀN⁻¹ ] [ -(AᵀN⁻¹A + M)     ] [ Iₙ         ]
+        [  A   N  ]   [     Iₘ    ] [                 N ] [ N⁻¹A    Iₘ ]
+
+    where M and N are diagonal.
+    """
+    m, n = size(A)
+    Aᵀ = A'
+    v = zeros(T, n+m)
+    w1 = zeros(T, n)
+    w2 = zeros(T, m)
+    s = jacobi(A, M, N, variant=variant)
+    function aux(A :: AbstractMatrix{T}, Aᵀ :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T},
+                 s :: Diagonal{T}, v :: Vector{T}, w1 :: Vector{T}, w2 :: Vector{T}; variant :: Bool=false) where T
+        v1 = view(v, 1:n)
+        v2 = view(v, (n+1):(n+m))
+        if !variant
+            # inplace L \ v
+            w1 .= v1 ./ M.diag
+            mul!(v2, A, w1, true, true)
+
+            # inplace D̃ \ v
+            v1 ./= M.diag
+            v2 .*= s.diag
+
+            # inplace Lᵀ \ v
+            mul!(w1, Aᵀ, v2)
+            w1 ./= M.diag
+            v1 .+= w1
+        else
+            # inplace Lᵀ \ v
+            w2 .= v2 ./ N.diag
+            mul!(v1, Aᵀ, w2, -true, true)
+
+            # inplace D̃ \ v
+            v1 .*= s.diag
+            v2 ./= N.diag
+
+            # inplace L \ v
+            mul!(w2, A, v1)
+            w2 ./= N.diag
+            v2 .-= w2
+        end
+        return v
+    end
+    return LinearOperator(T, n+m, n+m, true, true, (res, v) -> aux(A, Aᵀ, M, N, s, copyto!(res, v), w1, w2, variant=variant))
+end
 ```
+
+```{julia}
+#| output: false
+stokes_path = "./stokes-collection"
+
+grids = Dict("Q1-P0" => true,
+             "Q1-Q1" => true)
+
+dict = Dict("channel_domain" => true,
+            "flow_over_a_backward_facing_step" => true,
+            "lid_driven_cavity" => true,
+            "colliding_flow" => true)
+```
+
+```{julia}
+data = Array{Any}(undef, 8, 3)
+headers = [
+    "Problème",
+    "Itérations",
+    "Itérations avec P"
+]
+i = 1
+for grid in keys(grids)
+  if grids[grid]
+    for pb in keys(dict)
+      if dict[pb]
+        data[i, 1] = "$pb/$grid"
+
+        file = matopen(joinpath(stokes_path, "$pb/$grid/A.mat"))
+        A = read(file, "A")
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/b.mat"))
+        b = read(file, "b")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/c.mat"))
+        c = read(file, "c")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/M.mat"))
+        M = read(file, "M")
+        M = Diagonal(M)
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/N.mat"))
+        N = read(file, "N")
+        N = N + 1e-8 * I
+        N = Diagonal(N)
+        close(file)
+
+        A = sparse(A')
+        K, D, P = [-M A'; A N], [b; c], ischur(A, M, N)
+        (sol, stats) = minres_qlp(K, D)
+        data[i, 2] = stats.niter
+        (sol, stats) = minres_qlp(K, D, M=P, ldiv=false)
+        data[i, 3] = stats.niter
+        i += 1
+      end
+    end
+  end
+end
+pretty_table(data; header=headers)
+```
+
+Pour tous les problèmes, on remarque que le nombre d'itérations est réduit avec préconditionneur, ce qui est attendu et montre son efficacité.
