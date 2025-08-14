@@ -101,7 +101,7 @@ end
 ```
 
 ```{julia}
-#run(`git clone https://github.com/optimizers/animal.git`)
+run(`git clone https://github.com/optimizers/animal.git`)
 animal_path = "./animal"
 pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
 Pkg.add("HarwellRutherfordBoeing")
@@ -232,7 +232,7 @@ end
 ```
 
 ```{julia}
-#run(`git clone https://github.com/amontoison/stokes-collection.git`)
+run(`git clone https://github.com/amontoison/stokes-collection.git`)
 stokes_path = "./stokes-collection"
 
 ```
