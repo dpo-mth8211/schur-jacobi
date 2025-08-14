@@ -56,7 +56,7 @@ Vous pouvez choisir $N \neq 0$.
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-#run(`git clone https://github.com/optimizers/animal.git`)
+run(`git clone https://github.com/optimizers/animal.git`)
 ```
 
 ```{julia}
@@ -237,7 +237,7 @@ end
 
 ```{julia}
 # Téléchargement depuis https://github.com/amontoison/stokes-collection
-#run(`git clone https://github.com/amontoison/stokes-collection.git`)
+run(`git clone https://github.com/amontoison/stokes-collection.git`)
 ```
 ```{julia}
 stokes_path = "./stokes-collection"
