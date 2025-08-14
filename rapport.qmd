@@ -2,8 +2,8 @@
 title: "Rapport de laboratoire 5"
 subtitle: "MTH8211"
 author:
-  - name: Mon nom
-    email: mon.adresse@polymtl.ca
+  - name: Amami Yasmine  
+    email: yasmine.amami@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
 format:
@@ -27,12 +27,20 @@ engine: julia
 using Pkg
 Pkg.activate("labo6_env")
 Pkg.add("Krylov")
+Pkg.add("SparseArrays") 
+Pkg.add("LinearOperators")
+Pkg.add("MAT")
+Pkg.add("Statistics")
 Pkg.add("SuiteSparseMatrixCollection")
 Pkg.add("MatrixMarket")
+Pkg.add("HarwellRutherfordBoeing")
 
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
+using Krylov, LinearOperators
+using MAT, Statistics
+using SuiteSparseMatrixCollection
 using MatrixMarket
-using Krylov, SuiteSparseMatrixCollection
+using HarwellRutherfordBoeing
 ```
 
 # Contexte
@@ -49,7 +57,83 @@ Vous pouvez choisir $N \neq 0$.
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+#run(`git clone https://github.com/optimizers/animal.git`)
+
+function jacobi(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    if !variant
+        s = zeros(T, m)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                Mj = M[j,j]
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[row] += val^2 / Mj
+                end
+            end
+        else
+            for i in 1:m
+                s[i] = sum(A[i,j]^2 / M[j,j] for j=1:n)
+            end
+        end
+        s .+= N.diag
+    else
+        s = zeros(T, n)
+        for i in 1:n
+            s[i] = sum(A[j,i]^2 / N[j,j] for j=1:m)
+        end
+        s .+= M.diag
+    end
+    return Diagonal(1 ./ s)
+end
+
+animal_path = "./animal"
+pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
+
+function animal(pb :: String)
+    HB = HarwellBoeingMatrix("$(animal_path)/hb/$(pb).hb")
+    A = HB.matrix
+    n, m = size(A)
+    b = HB.rhs[:,1]
+    M = Diagonal(ones(n))
+    N = Diagonal(zeros(m))
+    return A, b, M, N
+end
+
+results = []
+
+for pb in pbs
+    A, b, M, N = animal(pb)
+    n, m = size(A)
+    
+    # Équations normales: (A*A^T + N) x = b avec N ≠ 0
+    N = Diagonal(1e-6 * ones(m))  
+    K = A' * A + N # Equations normales 
+    
+    # Sans préconditionneur
+    x1, stats1 = minres_qlp(K, A'*b)
+    
+    # Avec préconditionneur Jacobi
+    J_inv = jacobi(sparse(A'), M, N, variant=false)
+    x2, stats2 = minres_qlp(K, A'*b, M=J_inv)
+    
+    push!(results, (pb=pb, no_prec=stats1.niter, with_prec=stats2.niter))
+end
+
+# Résultats Obtenus 
+println("\n=== RÉSULTATS AGRÉGÉS QUESTION 1 ===")
+total_no_prec = sum(r.no_prec for r in results)
+total_prec = sum(r.with_prec for r in results)
+reduction = total_no_prec - total_prec
+improvement = round(reduction / total_no_prec * 100, digits=1)
+
+println("Total sans préconditionneur: $total_no_prec itérations")
+println("Total avec préconditionneur: $total_prec itérations")
+println("Réduction totale: $reduction itérations ($improvement%)")
+
 ```
 
 # Question 2
@@ -70,5 +154,112 @@ $$
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+#run(`git clone https://github.com/amontoison/stokes-collection.git`)
+
+function ischur(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    Aᵀ = A'
+    v = zeros(T, n+m)
+    w1 = zeros(T, n)
+    w2 = zeros(T, m)
+    s = jacobi(A, M, N, variant=variant)
+    function aux(A :: AbstractMatrix{T}, Aᵀ :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T},
+                 s :: Diagonal{T}, v :: Vector{T}, w1 :: Vector{T}, w2 :: Vector{T}; variant :: Bool=false) where T
+        v1 = view(v, 1:n)
+        v2 = view(v, (n+1):(n+m))
+        if !variant
+            w1 .= v1 ./ M.diag
+            mul!(v2, A, w1, true, true)
+            v1 ./= M.diag
+            v2 .*= s.diag
+            mul!(w1, Aᵀ, v2)
+            w1 ./= M.diag
+            v1 .+= w1
+        else
+            w2 .= v2 ./ N.diag
+            mul!(v1, Aᵀ, w2, -true, true)
+            v1 .*= s.diag
+            v2 ./= N.diag
+            mul!(w2, A, v1)
+            w2 ./= N.diag
+            v2 .-= w2
+        end
+        return v
+    end
+    return LinearOperator(T, n+m, n+m, true, true, (res, v) -> aux(A, Aᵀ, M, N, s, copyto!(res, v), w1, w2, variant=variant))
+end
+
+stokes_path = "./stokes-collection"
+
+grids = Dict("Q1-P0" => true,
+             "Q1-Q1" => true)
+
+dict = Dict("channel_domain" => true,
+            "flow_over_a_backward_facing_step" => true,
+            "lid_driven_cavity" => true,
+            "colliding_flow" => true)
+
+results_stokes = []
+
+for grid in keys(grids)
+    if grids[grid]
+        for pb in keys(dict)
+            if dict[pb]
+                println("Résolution: $pb avec $grid")
+                
+                file = matopen(joinpath(stokes_path, "$pb/$grid/A.mat"))
+                A = read(file, "A")
+                close(file)
+                file = matopen(joinpath(stokes_path, "$pb/$grid/b.mat"))
+                b = read(file, "b")[:]
+                close(file)
+                file = matopen(joinpath(stokes_path, "$pb/$grid/c.mat"))
+                c = read(file, "c")[:]
+                close(file)
+                file = matopen(joinpath(stokes_path, "$pb/$grid/M.mat"))
+                M = read(file, "M")
+                M = Diagonal(M)
+                close(file)
+                file = matopen(joinpath(stokes_path, "$pb/$grid/N.mat"))
+                N = read(file, "N")
+                N = N + 1e-8 * I
+                N = Diagonal(N)
+                close(file)
+                
+                # Système de point de selle: [-M A^T; A N] [x; y] = [b; c]
+                K = [-M A; A' N]
+                D = [b; c]
+                
+                # Sans préconditionneur
+                x1, stats1 = minres_qlp(K, D)
+                
+                # Variant 1: [M, 0; 0, diag(A M^{-1} A^T + N)]
+                J1 = ischur(sparse(A'), M, N, variant=false)
+                x2, stats2 = minres_qlp(K, D, M=J1)
+                
+                # Variant 2: [diag(A^T N^{-1} A + M), 0; 0, N]
+                J2 = ischur(sparse(A'), M, N, variant=true)
+                x3, stats3 = minres_qlp(K, D, M=J2)
+                
+                push!(results_stokes, (
+                    problem="$pb-$grid",
+                    no_prec=stats1.niter,
+                    variant1=stats2.niter,
+                    variant2=stats3.niter
+                ))
+            end
+        end
+    end
+end
+
+# Résultats Obtenus
+println("\n=== RÉSULTATS AGRÉGÉS QUESTION 2 ===")
+total_no_prec = sum(r.no_prec for r in results_stokes)
+total_v1 = sum(r.variant1 for r in results_stokes)
+total_v2 = sum(r.variant2 for r in results_stokes)
+
+println("Total sans préconditionneur: $total_no_prec itérations")
+println("Total avec variant 1: $total_v1 itérations")
+println("Total avec variant 2: $total_v2 itérations")
+
 ```
