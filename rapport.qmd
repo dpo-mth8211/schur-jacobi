@@ -142,11 +142,11 @@ data = hcat("Nom ", "Nbre d'itératios sans P", "Nbre d'itératios avec P")
 
 
 for pb in pbs
-  AT, b, M, N = animal(pb)
+  AT, b, M, N = animal(pb) # La fonction animale renvoie A' étant donnée les notations du nootebook 
   N = 1e-8 * Diagonal(ones(size(N,1)))
   T = eltype(AT)
   D = jacobi(sparse(AT'), M, N, variant=false)
-  AAT = AT' * AT + N    # Les équations normales
+  AAT = AT' * AT + N    # Les équations normales: la matrice augementé [M A'; A -N]!!
   J = Jacobi{T}(D)
 
   (x, stats) = minres_qlp(AAT, AT'*b)
