@@ -2,8 +2,8 @@
 title: "Rapport de laboratoire 5"
 subtitle: "MTH8211"
 author:
-  - name: Mon nom
-    email: mon.adresse@polymtl.ca
+  - name: Oussama Mouhtal
+    email: oussama-2.mouhtal@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
 format:
@@ -23,17 +23,24 @@ engine: julia
 ---
 
 ```{julia}
+#| echo : false
 #| output: false
 using Pkg
 Pkg.activate("labo6_env")
 Pkg.add("Krylov")
 Pkg.add("SuiteSparseMatrixCollection")
 Pkg.add("MatrixMarket")
+Pkg.add("HarwellRutherfordBoeing")
+Pkg.add("PrettyTables")
+Pkg.add("MAT")
+Pkg.add("LinearOperators")
 
 using LinearAlgebra
 using MatrixMarket
-using Krylov, SuiteSparseMatrixCollection
+using Krylov, SuiteSparseMatrixCollection, HarwellRutherfordBoeing, SparseArrays, MAT, LinearOperators
+using PrettyTables
 ```
+
 
 # Contexte
 
@@ -49,7 +56,106 @@ Vous pouvez choisir $N \neq 0$.
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+#run(`git clone https://github.com/optimizers/animal.git`)
+```
+
+```{julia}
+animal_path = "./animal"
+pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
+
+function animal(pb :: String)
+    HB = HarwellBoeingMatrix("$(animal_path)/hb/$(pb).hb")
+    A = HB.matrix
+    n, m = size(A)
+    b = HB.rhs[:,1]
+    M = Diagonal(ones(n))
+    N = Diagonal(zeros(m))
+    return A, b, M, N
+end
+```
+
+```{julia}
+"""
+    J⁻¹ = jacobi(A, M, N; variant=false)
+
+Compute the inverse of the diagonal of `AM⁻¹Aᵀ + N` when `variant = false`.
+Compute the inverse of the diagonal of `AᵀN⁻¹A + M` when `variant = true`.
+`J⁻¹`, `M` and `N` are diagonal matrices.
+"""
+function jacobi(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    if !variant
+        s = zeros(T, m)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                Mj = M[j,j]
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[row] += val^2 / Mj
+                end
+            end
+        else
+            for i in 1:m
+                s[i] = sum(A[i,j]^2 / M[j,j] for j=1:n)
+            end
+        end
+        s .+= N.diag
+    else
+        s = zeros(T, n)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[j] += val^2 / N[row,row]
+                end
+            end
+        else
+            for i in 1:n
+                s[i] = sum(A[j,i]^2 / N[j,j] for j=1:m)
+            end
+        end
+        s .+= M.diag
+    end
+    return Diagonal(1 ./ s)
+end
+
+
+```
+
+```{julia}
+struct Jacobi{T}
+    D:: Diagonal{T} 
+end
+
+function LinearAlgebra.mul!(y, J::Jacobi{T}, x) where {T}
+    y .=  J.D * x
+    return y
+end
+# Génération du tableau
+data = hcat("Nom ", "Nbre d'itératios sans P", "Nbre d'itératios avec P")
+
+
+for pb in pbs
+  AT, b, M, N = animal(pb)
+  N = 1e-8 * Diagonal(ones(size(N,1)))
+  T = eltype(AT)
+  D = jacobi(sparse(AT'), M, N, variant=false)
+  AAT = AT' * AT + N    # Les équations normales
+  J = Jacobi{T}(D)
+
+  (x, stats) = minres_qlp(AAT, AT'*b)
+  (xprec, statsprec) = minres_qlp(AAT, AT'*b; M=J)
+  data = vcat(data, hcat(pb, stats.niter, statsprec.niter))
+end
+
+# Affichage
+pretty_table(data; tf=tf_markdown)
 ```
 
 # Question 2
@@ -68,7 +174,120 @@ $$
 $$
 
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
+```{julia}
+"""
+    S⁻¹ = ischur(A, M, N; variant=false)
+
+Linear operator that models a preconditioner based on the diagonal
+of the Schur complement and the block LBLᵀ factorization
+
+    [ -M   Aᵀ ] = [  Iₙ       ] [  -M               ] [ Iₙ  -M⁻¹Aᵀ ]
+    [  A   N  ]   [ -AM⁻¹  Iₘ ] [        AM⁻¹Aᵀ + N ] [      Iₘ    ]
+
+or the variant
+
+    [ -M   Aᵀ ] = [ Iₙ  AᵀN⁻¹ ] [ -(AᵀN⁻¹A + M)     ] [ Iₙ         ]
+    [  A   N  ]   [     Iₘ    ] [                 N ] [ N⁻¹A    Iₘ ]
+
+where M and N are diagonal.
+"""
+function ischur(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    Aᵀ = A'
+    v = zeros(T, n+m)
+    w1 = zeros(T, n)
+    w2 = zeros(T, m)
+    s = jacobi(A, M, N, variant=variant)
+    function aux(A :: AbstractMatrix{T}, Aᵀ :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T},
+                 s :: Diagonal{T}, v :: Vector{T}, w1 :: Vector{T}, w2 :: Vector{T}; variant :: Bool=false) where T
+        v1 = view(v, 1:n)
+        v2 = view(v, (n+1):(n+m))
+        if !variant
+            # inplace L \ v
+            w1 .= v1 ./ M.diag
+            mul!(v2, A, w1, true, true)
+
+            # inplace D̃ \ v
+            v1 ./= M.diag
+            v2 .*= s.diag
+
+            # inplace Lᵀ \ v
+            mul!(w1, Aᵀ, v2)
+            w1 ./= M.diag
+            v1 .+= w1
+        else
+            # inplace Lᵀ \ v
+            w2 .= v2 ./ N.diag
+            mul!(v1, Aᵀ, w2, -true, true)
+
+            # inplace D̃ \ v
+            v1 .*= s.diag
+            v2 ./= N.diag
+
+            # inplace L \ v
+            mul!(w2, A, v1)
+            w2 ./= N.diag
+            v2 .-= w2
+        end
+        return v
+    end
+    return LinearOperator(T, n+m, n+m, true, true, (res, v) -> aux(A, Aᵀ, M, N, s, copyto!(res, v), w1, w2, variant=variant))
+end
+```
 
 ```{julia}
-# votre code ici
+# Téléchargement depuis https://github.com/amontoison/stokes-collection
+#run(`git clone https://github.com/amontoison/stokes-collection.git`)
+```
+```{julia}
+stokes_path = "./stokes-collection"
+# Génération du tableau
+data = hcat("grid", "nom ", "niter sans Prec", "niter avec S", "niter avec P")
+
+grids = Dict("Q1-P0" => true,
+             "Q1-Q1" => true)
+
+dict = Dict("channel_domain" => true,
+            "flow_over_a_backward_facing_step" => true,
+            "lid_driven_cavity" => true,
+            "colliding_flow" => true)
+
+for grid in keys(grids)
+  if grids[grid]
+    for pb in keys(dict)
+      if dict[pb]
+        file = matopen(joinpath(stokes_path, "$pb/$grid/A.mat"))
+        A = read(file, "A")
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/b.mat"))
+        b = read(file, "b")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/c.mat"))
+        c = read(file, "c")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/M.mat"))
+        M = read(file, "M")
+        M = Diagonal(M)
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/N.mat"))
+        N = read(file, "N")
+        N = N + 1e-8 * I
+        N = Diagonal(N)
+        close(file)
+
+        K = [-M A; A' N]
+        D = [b; c]
+        S = ischur(sparse(A'), M, N, variant=false) # Préconditionneur avec variant = false
+        P = ischur(sparse(A'), M, N, variant=true)  # # Préconditionneur avec variant = true
+        (x, stats) = minres_qlp(K, D) # Résolution du problème de point selle sans préconditionnement
+        (xprecS, statsprecS) = minres_qlp(K, D; M=S) # Résolution du problème de point selle 
+                                                    #avec préconditionnement (variant false) 
+        (xprecP, statsprecP) = minres_qlp(K, D; M=P) # Résolution du problème de point selle 
+                                                     #avec préconditionnement (variant true)
+        data = vcat(data, hcat(grid, pb[1:10] , stats.niter, statsprecS.niter, statsprecP.niter))
+      end
+    end
+  end
+end
+pretty_table(data; tf=tf_markdown)
 ```
