@@ -57,7 +57,7 @@ Vous pouvez choisir $N \neq 0$.
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-#run(`git clone https://github.com/optimizers/animal.git`)
+run(`git clone https://github.com/optimizers/animal.git`)
 
 function jacobi(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
     m, n = size(A)
@@ -154,7 +154,7 @@ $$
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-#run(`git clone https://github.com/amontoison/stokes-collection.git`)
+run(`git clone https://github.com/amontoison/stokes-collection.git`)
 
 function ischur(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
     m, n = size(A)
