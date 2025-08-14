@@ -1,5 +1,5 @@
 ---
-title: "Rapport de laboratoire 5"
+title: "Rapport de laboratoire 6"
 subtitle: "MTH8211"
 author:
   - name: Hortense Beaudoin
@@ -101,7 +101,7 @@ end
 ```
 
 ```{julia}
-run(`git clone https://github.com/optimizers/animal.git`)
+#run(`git clone https://github.com/optimizers/animal.git`)
 animal_path = "./animal"
 pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
 Pkg.add("HarwellRutherfordBoeing")
@@ -119,7 +119,7 @@ function animal(pb :: String)
     n, m = size(A)
     b = HB.rhs[:,1]
     M = Diagonal(ones(n))
-    N = Diagonal(zeros(m))
+    N = 2*Diagonal(zeros(m))
     return A, b, M, N
 end
 ```
@@ -232,7 +232,7 @@ end
 ```
 
 ```{julia}
-run(`git clone https://github.com/amontoison/stokes-collection.git`)
+#run(`git clone https://github.com/amontoison/stokes-collection.git`)
 stokes_path = "./stokes-collection"
 
 ```
