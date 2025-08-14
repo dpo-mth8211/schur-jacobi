@@ -1,9 +1,9 @@
 ---
-title: "Rapport de laboratoire 5"
+title: "Rapport de laboratoire 6"
 subtitle: "MTH8211"
 author:
-  - name: Mon nom
-    email: mon.adresse@polymtl.ca
+  - name: Hortense Beaudoin
+    email: hortense.beaudoin@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
 format:
@@ -30,7 +30,7 @@ Pkg.add("Krylov")
 Pkg.add("SuiteSparseMatrixCollection")
 Pkg.add("MatrixMarket")
 
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
 using MatrixMarket
 using Krylov, SuiteSparseMatrixCollection
 ```
@@ -49,8 +49,109 @@ Vous pouvez choisir $N \neq 0$.
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+"""
+    J⁻¹ = jacobi(A, M, N; variant=false)
+
+Compute the inverse of the diagonal of `AM⁻¹Aᵀ + N` when `variant = false`.
+Compute the inverse of the diagonal of `AᵀN⁻¹A + M` when `variant = true`.
+`J⁻¹`, `M` and `N` are diagonal matrices.
+"""
+function jacobi(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    if !variant
+        s = zeros(T, m)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                Mj = M[j,j]
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[row] += val^2 / Mj
+                end
+            end
+        else
+            for i in 1:m
+                s[i] = sum(A[i,j]^2 / M[j,j] for j=1:n)
+            end
+        end
+        s .+= N.diag
+    else
+        s = zeros(T, n)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[j] += val^2 / N[row,row]
+                end
+            end
+        else
+            for i in 1:n
+                s[i] = sum(A[j,i]^2 / N[j,j] for j=1:m)
+            end
+        end
+        s .+= M.diag
+    end
+    return Diagonal(1 ./ s)
+end
 ```
+
+```{julia}
+run(`git clone https://github.com/optimizers/animal.git`)
+animal_path = "./animal"
+pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
+Pkg.add("HarwellRutherfordBoeing")
+using HarwellRutherfordBoeing
+Pkg.add("PrettyTables")
+Pkg.add("DataFrames")
+Pkg.add("Plots")
+using PrettyTables
+using DataFrames
+using Plots
+
+function animal(pb :: String)
+    HB = HarwellBoeingMatrix("$(animal_path)/hb/$(pb).hb")
+    A = HB.matrix
+    n, m = size(A)
+    b = HB.rhs[:,1]
+    M = Diagonal(ones(n))
+    N = 2*Diagonal(zeros(m))
+    return A, b, M, N
+end
+```
+
+
+```{julia}
+Niter_noM = []
+Niter_withM = []
+for p in pbs
+  A, b, M, N = animal(p)
+  n, m = size(A)
+
+  P = jacobi(sparse(A'), M, N; variant = true)
+  (x, stats) = minres_qlp(A*A', b; history=true)
+  (xm, statsm) = minres_qlp(A*A', b; M=P, history=true)
+
+  push!(Niter_noM, stats.niter)
+  push!(Niter_withM, statsm.niter)
+end
+
+```
+
+```{julia}
+pbs = ["small", "small2", "medium", "medium2", "large", "large2", "very", "very2"]
+df = DataFrame()
+df[:, :Problem] = pbs
+df[:, :"Nbiter - no M"] = Niter_noM
+df[:, "Nbiter - with M"] = Niter_withM
+
+pretty_table(df, linebreaks=true)
+```
+
 
 # Question 2
 
@@ -70,5 +171,181 @@ $$
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 ```{julia}
-# votre code ici
+"""
+    S⁻¹ = ischur(A, M, N; variant=false)
+
+Linear operator that models a preconditioner based on the diagonal
+of the Schur complement and the block LBLᵀ factorization
+
+    [ -M   Aᵀ ] = [  Iₙ       ] [  -M               ] [ Iₙ  -M⁻¹Aᵀ ]
+    [  A   N  ]   [ -AM⁻¹  Iₘ ] [        AM⁻¹Aᵀ + N ] [      Iₘ    ]
+
+or the variant
+
+    [ -M   Aᵀ ] = [ Iₙ  AᵀN⁻¹ ] [ -(AᵀN⁻¹A + M)     ] [ Iₙ         ]
+    [  A   N  ]   [     Iₘ    ] [                 N ] [ N⁻¹A    Iₘ ]
+
+where M and N are diagonal.
+"""
+function ischur(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    Aᵀ = A'
+    v = zeros(T, n+m)
+    w1 = zeros(T, n)
+    w2 = zeros(T, m)
+    s = jacobi(A, M, N, variant=variant)
+    function aux(A :: AbstractMatrix{T}, Aᵀ :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T},
+                 s :: Diagonal{T}, v :: Vector{T}, w1 :: Vector{T}, w2 :: Vector{T}; variant :: Bool=false) where T
+        v1 = view(v, 1:n)
+        v2 = view(v, (n+1):(n+m))
+        if !variant
+            # inplace L \ v
+            w1 .= v1 ./ M.diag
+            mul!(v2, A, w1, true, true)
+
+            # inplace D̃ \ v
+            v1 ./= M.diag
+            v2 .*= s.diag
+
+            # inplace Lᵀ \ v
+            mul!(w1, Aᵀ, v2)
+            w1 ./= M.diag
+            v1 .+= w1
+        else
+            # inplace Lᵀ \ v
+            w2 .= v2 ./ N.diag
+            mul!(v1, Aᵀ, w2, -true, true)
+
+            # inplace D̃ \ v
+            v1 .*= s.diag
+            v2 ./= N.diag
+
+            # inplace L \ v
+            mul!(w2, A, v1)
+            w2 ./= N.diag
+            v2 .-= w2
+        end
+        return v
+    end
+    return LinearOperator(T, n+m, n+m, true, true, (res, v) -> aux(A, Aᵀ, M, N, s, copyto!(res, v), w1, w2, variant=variant))
+end
+```
+
+```{julia}
+run(`git clone https://github.com/amontoison/stokes-collection.git`)
+stokes_path = "./stokes-collection"
+
+```
+
+```{julia}
+Pkg.add("MAT")
+using MAT
+Pkg.add("LinearOperators")
+using LinearOperators
+```
+
+```{julia}
+grids = Dict("Q1-P0" => true,
+             "Q1-Q1" => true)
+
+dict = Dict("channel_domain" => true,
+            "flow_over_a_backward_facing_step" => true,
+            "lid_driven_cavity" => true,
+            "colliding_flow" => true)
+
+Niter_NoM = []
+for grid in keys(grids)
+  if grids[grid]
+    for pb in keys(dict)
+      if dict[pb]
+        file = matopen(joinpath(stokes_path, "$pb/$grid/A.mat"))
+        A = read(file, "A")
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/b.mat"))
+        b = read(file, "b")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/c.mat"))
+        c = read(file, "c")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/M.mat"))
+        M = read(file, "M")
+        M = Diagonal(M)
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/N.mat"))
+        N = read(file, "N")
+        N = N + 1e-8 * I
+        N = Diagonal(N)
+        close(file)
+
+        K = [-M A; A' N]
+        D = [b; c]
+
+        P = ischur(sparse(A'), M, N)
+        #P = ischur(A, N, M)
+        (x, stats) = minres_qlp(K, D; history=true)
+        push!(Niter_NoM, stats.niter)
+      end
+    end
+  end
+end
+
+```
+
+```{julia}
+grids = Dict("Q1-P0" => true,
+             "Q1-Q1" => true)
+
+dict = Dict("channel_domain" => true,
+            "flow_over_a_backward_facing_step" => true,
+            "lid_driven_cavity" => true,
+            "colliding_flow" => true)
+
+Niter_withM = []
+for grid in keys(grids)
+  if grids[grid]
+    for pb in keys(dict)
+      if dict[pb]
+        file = matopen(joinpath(stokes_path, "$pb/$grid/A.mat"))
+        A = read(file, "A")
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/b.mat"))
+        b = read(file, "b")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/c.mat"))
+        c = read(file, "c")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/M.mat"))
+        M = read(file, "M")
+        M = Diagonal(M)
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/N.mat"))
+        N = read(file, "N")
+        N = N + 1e-8 * I
+        N = Diagonal(N)
+        close(file)
+
+        K = [-M A; A' N]
+        D = [b; c]
+
+        P = ischur(sparse(A'), M, N)
+        #P = ischur(A, N, M)
+        (x, stats) = minres_qlp(K, D; M=P, history=true)
+        push!(Niter_withM, stats.niter)
+      end
+    end
+  end
+end
+
+```
+
+```{julia}
+pbs = ["Q1-P0-channel_domain", "Q1-P0-flow_over_a_backward_facing_step", "Q1-P0-lid_driven_cavity", "Q1-P0-colliding_flow", "Q1-Q1-channel_domain", "Q1-Q1-flow_over_a_backward_facing_step", "Q1-Q1-lid_driven_cavity", "Q1-Q1-colliding_flow"]
+
+
+df = DataFrame()
+df[:, :Problem] = pbs
+df[:, :"Nbiter - no M"] = Niter_noM
+df[:, "Nbiter - with M"] = Niter_withM
+
+pretty_table(df, linebreaks=true)
 ```
