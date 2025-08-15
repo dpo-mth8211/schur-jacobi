@@ -50,6 +50,9 @@ $.
 Vous pouvez choisir $N \neq 0$.
 
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
+```{julia}
+run(`git clone https://github.com/optimizers/animal.git`)
+```
 
 
 ```{julia}
@@ -157,7 +160,9 @@ $$
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
 
-
+```{julia}
+run(`git clone https://github.com/amontoison/stokes-collection.git`)
+```
 ```{julia}
 """
     S⁻¹ = ischur(A, M, N; variant=false)
