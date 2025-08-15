@@ -2,8 +2,8 @@
 title: "Rapport de laboratoire 5"
 subtitle: "MTH8211"
 author:
-  - name: Mon nom
-    email: mon.adresse@polymtl.ca
+  - name: Ulrich Baron-Fournier
+    email: ulrich.baron-fournier@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
 format:
@@ -27,12 +27,15 @@ engine: julia
 using Pkg
 Pkg.activate("labo6_env")
 Pkg.add("Krylov")
-Pkg.add("SuiteSparseMatrixCollection")
+Pkg.add(["SuiteSparseMatrixCollection","MAT","LinearOperators","HarwellRutherfordBoeing"])
 Pkg.add("MatrixMarket")
-
-using LinearAlgebra
+Pkg.add("PrettyTables")
+Pkg.add("DataFrames")
+using LinearAlgebra, SparseArrays, HarwellRutherfordBoeing, MAT, LinearOperators
 using MatrixMarket
 using Krylov, SuiteSparseMatrixCollection
+using PrettyTables
+using DataFrames
 ```
 
 # Contexte
@@ -48,10 +51,94 @@ Vous pouvez choisir $N \neq 0$.
 
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
+
 ```{julia}
-# votre code ici
+"""
+    J⁻¹ = jacobi(A, M, N; variant=false)
+
+Compute the inverse of the diagonal of `AM⁻¹Aᵀ + N` when `variant = false`.
+Compute the inverse of the diagonal of `AᵀN⁻¹A + M` when `variant = true`.
+`J⁻¹`, `M` and `N` are diagonal matrices.
+"""
+function jacobi(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    if !variant
+        s = zeros(T, m)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                Mj = M[j,j]
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[row] += val^2 / Mj
+                end
+            end
+        else
+            for i in 1:m
+                s[i] = sum(A[i,j]^2 / M[j,j] for j=1:n)
+            end
+        end
+        s .+= N.diag
+    else
+        s = zeros(T, n)
+        if issparse(A)
+            rows = rowvals(A)
+            vals = nonzeros(A)
+            for j in 1:n
+                for i in nzrange(A, j)
+                    row = rows[i]
+                    val = vals[i]
+                    s[j] += val^2 / N[row,row]
+                end
+            end
+        else
+            for i in 1:n
+                s[i] = sum(A[j,i]^2 / N[j,j] for j=1:m)
+            end
+        end
+        s .+= M.diag
+    end
+    return Diagonal(1 ./ s)
+end
 ```
 
+```{julia}
+animal_path = "./animal"
+pbs = ("small", "small2", "medium", "medium2", "large", "large2", "very", "very2")
+
+function animal(pb :: String)
+    HB = HarwellBoeingMatrix("$(animal_path)/hb/$(pb).hb")
+    A = HB.matrix
+    n, m = size(A)
+    b = HB.rhs[:,1]
+    M = Diagonal(ones(n))
+    N = Diagonal(zeros(m))
+    return A, b, M, N
+end
+```
+```{julia}
+Niter_NoPrec = []
+Niter_Prec = []
+for pb in pbs
+    A, b, M, N = animal(pb)
+    n, m = size(A)
+    N = 1e-6*Diagonal(ones(m))
+    Prec = jacobi(sparse(A'), M, N; variant = false)
+    (x_noprec, stats_noprec) = minres_qlp(A' * A + N, A' * b; history=true)
+    (x_prec, stats_prec) = minres_qlp(A' * A + N, A' * b; M=Prec, history=true)
+    push!(Niter_NoPrec, stats_noprec.niter)
+    push!(Niter_Prec, stats_prec.niter)
+end
+pbs = ["small", "small2", "medium", "medium2", "large", "large2", "very", "very2"]
+table = DataFrame()
+table[:, "Problem"] = pbs
+table[:, "Nbiter no prec"] = Niter_NoPrec
+table[:, "Nbiter prec"] = Niter_Prec
+pretty_table(table, linebreaks=true)
+```
+On peut voir que le nombre d'itération diminue pour tous les problèmes tests (jusqu'à plus de 3 fois moins d'itérations) lors de l'application du préconditionneur.
 # Question 2
 
 Résoudre les systèmes de point de selle de la `stokes-collection` à l'aide de MINRES-QLP et les préconditionneurs de Schur-Jacobi
@@ -69,6 +156,118 @@ $$
 
 Faire afficher des résultats agrégés pour comparer le nombre d'itérations de MINRES-QLP avec et sans préconditionneur.
 
+
+
 ```{julia}
-# votre code ici
+"""
+    S⁻¹ = ischur(A, M, N; variant=false)
+
+Linear operator that models a preconditioner based on the diagonal
+of the Schur complement and the block LBLᵀ factorization
+
+    [ -M   Aᵀ ] = [  Iₙ       ] [  -M               ] [ Iₙ  -M⁻¹Aᵀ ]
+    [  A   N  ]   [ -AM⁻¹  Iₘ ] [        AM⁻¹Aᵀ + N ] [      Iₘ    ]
+
+or the variant
+
+    [ -M   Aᵀ ] = [ Iₙ  AᵀN⁻¹ ] [ -(AᵀN⁻¹A + M)     ] [ Iₙ         ]
+    [  A   N  ]   [     Iₘ    ] [                 N ] [ N⁻¹A    Iₘ ]
+
+where M and N are diagonal.
+"""
+function ischur(A :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T}; variant :: Bool=false) where T
+    m, n = size(A)
+    Aᵀ = A'
+    v = zeros(T, n+m)
+    w1 = zeros(T, n)
+    w2 = zeros(T, m)
+    s = jacobi(A, M, N, variant=variant)
+    function aux(A :: AbstractMatrix{T}, Aᵀ :: AbstractMatrix{T}, M :: Diagonal{T}, N :: Diagonal{T},
+                 s :: Diagonal{T}, v :: Vector{T}, w1 :: Vector{T}, w2 :: Vector{T}; variant :: Bool=false) where T
+        v1 = view(v, 1:n)
+        v2 = view(v, (n+1):(n+m))
+        if !variant
+            # inplace L \ v
+            w1 .= v1 ./ M.diag
+            mul!(v2, A, w1, true, true)
+
+            # inplace D̃ \ v
+            v1 ./= M.diag
+            v2 .*= s.diag
+
+            # inplace Lᵀ \ v
+            mul!(w1, Aᵀ, v2)
+            w1 ./= M.diag
+            v1 .+= w1
+        else
+            # inplace Lᵀ \ v
+            w2 .= v2 ./ N.diag
+            mul!(v1, Aᵀ, w2, -true, true)
+
+            # inplace D̃ \ v
+            v1 .*= s.diag
+            v2 ./= N.diag
+
+            # inplace L \ v
+            mul!(w2, A, v1)
+            w2 ./= N.diag
+            v2 .-= w2
+        end
+        return v
+    end
+    return LinearOperator(T, n+m, n+m, true, true, (res, v) -> aux(A, Aᵀ, M, N, s, copyto!(res, v), w1, w2, variant=variant))
+end
+stokes_path = "./stokes-collection"
+grids = Dict("Q1-P0" => true,
+             "Q1-Q1" => true)
+
+dict = Dict("channel_domain" => true,
+            "flow_over_a_backward_facing_step" => true,
+            "lid_driven_cavity" => true,
+            "colliding_flow" => true)
+Niter_NoPrec = []
+Niter_Prec = []
+for grid in keys(grids)
+  if grids[grid]
+    for pb in keys(dict)
+      if dict[pb]
+        file = matopen(joinpath(stokes_path, "$pb/$grid/A.mat"))
+        A = read(file, "A")
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/b.mat"))
+        b = read(file, "b")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/c.mat"))
+        c = read(file, "c")[:]
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/M.mat"))
+        M = read(file, "M")
+        M = Diagonal(M)
+        close(file)
+        file = matopen(joinpath(stokes_path, "$pb/$grid/N.mat"))
+        N = read(file, "N")
+        N = N + 1e-8 * I
+        N = Diagonal(N)
+        close(file)
+
+        K = [-M A; A' N]
+        D = [b; c]
+
+        Prec = ischur(sparse(A'), M, N, variant=false)
+        x_noprec, stats_noprec = minres_qlp(K, D)
+        x_prec, stats_prec = minres_qlp(K, D, M=Prec)
+        push!(Niter_NoPrec, stats_noprec.niter)
+        push!(Niter_Prec, stats_prec.niter)
+      end
+    end
+  end
+end
+
+pbs = ["Q1P0-cd", "Q1P0-fobsf", "Q1P0-ldc", "Q1P0-cf", "Q1Q1-cd", "Q1Q1-fobsf", "Q1Q1-ldc", "Q1Q1-cf"]
+table = DataFrame()
+table[:, "Problem"] = pbs
+table[:, "Nbiter no prec"] = Niter_NoPrec
+table[:, "Nbiter prec"] = Niter_Prec
+pretty_table(table, linebreaks=true)
 ```
+On peut voir que le préconditionneur de Schur-Jacobi permet de réduire le nombre d'itération d'environ de moitié sur tous les problèmes tests!
